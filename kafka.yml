@@ -10,7 +10,7 @@
     zookeeper_download_url: "https://archive.apache.org/dist/zookeeper/zookeeper-{{ zookeeper_version }}/apache-zookeeper-{{ zookeeper_version }}-bin.tar.gz"
     zookeeper_install_dir: "/opt/zookeeper"
     kafka_log_dir: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/logs"
-    
+
   tasks:
     # Install OpenJDK 11
     - name: Install OpenJDK 11
@@ -84,11 +84,18 @@
         dest: "{{ kafka_install_dir }}"
         remote_src: yes
 
+    # Create Kafka logs directory if it doesn't exist
+    - name: Create Kafka logs directory if it doesn't exist
+      file:
+        path: "{{ kafka_log_dir }}"
+        state: directory
+        mode: '0755'
+
     - name: Set up Kafka config
       copy:
         content: |
           broker.id=0
-          log.dirs={{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/logs
+          log.dirs={{ kafka_log_dir }}
           zookeeper.connect=localhost:2181
           listeners=PLAINTEXT://:9092
           num.partitions=1
@@ -106,16 +113,13 @@
       shell: "ps aux | grep kafka-server | awk '{print $2}' | xargs kill -9"
       when: kafka_status.stdout != ""
 
-    - name: Remove Kafka lock file if present
+    # Ensure Kafka logs directory has proper permissions
+    - name: Ensure Kafka logs directory has correct permissions
       file:
-        path: "{{ kafka_log_dir }}/.lock"
-        state: absent
-
-    - name: Remove Kafka lock file if present (PID file)
-      file:
-        path: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/logs/kafka-server.pid"
-        state: absent
-      when: kafka_status.stdout != ""
+        path: "{{ kafka_log_dir }}"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
 
     # Enable swap space if needed
     - name: Check available memory
@@ -175,14 +179,6 @@
       register: kafka_start_output
       failed_when: false
 
-    # Ensure Kafka logs directory has proper permissions
-    - name: Ensure Kafka logs directory has correct permissions
-      file:
-        path: "{{ kafka_log_dir }}"
-        owner: ubuntu
-        group: ubuntu
-        mode: '0755'
-    
     # Wait for Kafka to start on port 9092
     - name: Wait for Kafka to start on port 9092
       wait_for:
