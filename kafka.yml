@@ -1,0 +1,259 @@
+---
+- name: Install Kafka and Zookeeper on Ubuntu
+  hosts: all
+  become: yes
+  vars:
+    kafka_version: "2.8.0"
+    kafka_download_url: "https://archive.apache.org/dist/kafka/{{ kafka_version }}/kafka_2.13-{{ kafka_version }}.tgz"
+    kafka_install_dir: "/opt/kafka"
+    zookeeper_version: "3.7.0"
+    zookeeper_download_url: "https://archive.apache.org/dist/zookeeper/zookeeper-{{ zookeeper_version }}/apache-zookeeper-{{ zookeeper_version }}-bin.tar.gz"
+    zookeeper_install_dir: "/opt/zookeeper"
+    kafka_log_dir: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/logs"
+    
+  tasks:
+    # Install OpenJDK 11
+    - name: Install OpenJDK 11
+      apt:
+        name: openjdk-11-jdk
+        state: present
+        update_cache: yes
+
+    # Install net-tools (which includes netstat)
+    - name: Install net-tools
+      apt:
+        name: net-tools
+        state: present 
+
+    # Install Zookeeper
+    - name: Create Zookeeper installation directory
+      file:
+        path: "{{ zookeeper_install_dir }}"
+        state: directory
+
+    - name: Download Zookeeper
+      get_url:
+        url: "{{ zookeeper_download_url }}"
+        dest: "/tmp/apache-zookeeper-{{ zookeeper_version }}-bin.tar.gz"
+    
+    - name: Extract Zookeeper
+      unarchive:
+        src: "/tmp/apache-zookeeper-{{ zookeeper_version }}-bin.tar.gz"
+        dest: "{{ zookeeper_install_dir }}"
+        remote_src: yes
+
+    - name: Create Zookeeper conf directory
+      file:
+        path: "{{ zookeeper_install_dir }}/apache-zookeeper-{{ zookeeper_version }}-bin/conf"
+        state: directory
+
+    - name: Set up Zookeeper config
+      copy:
+        content: |
+          tickTime=2000
+          dataDir={{ zookeeper_install_dir }}/apache-zookeeper-{{ zookeeper_version }}-bin/data
+          clientPort=2181
+          initLimit=5
+          syncLimit=2
+        dest: "{{ zookeeper_install_dir }}/apache-zookeeper-{{ zookeeper_version }}-bin/conf/zoo.cfg"
+
+    - name: Check if Zookeeper is already running
+      shell: "ps aux | grep -v grep | grep -i zookeeper || true"
+      register: zookeeper_status
+      changed_when: false
+      failed_when: false
+
+    - name: Start Zookeeper if not already running
+      shell: "{{ zookeeper_install_dir }}/apache-zookeeper-{{ zookeeper_version }}-bin/bin/zkServer.sh start"
+      when: zookeeper_status.stdout == ""
+
+    # Install Kafka
+    - name: Create Kafka installation directory
+      file:
+        path: "{{ kafka_install_dir }}"
+        state: directory
+
+    - name: Download Kafka
+      get_url:
+        url: "{{ kafka_download_url }}"
+        dest: "/tmp/kafka_2.13-{{ kafka_version }}.tgz"
+
+    - name: Extract Kafka
+      unarchive:
+        src: "/tmp/kafka_2.13-{{ kafka_version }}.tgz"
+        dest: "{{ kafka_install_dir }}"
+        remote_src: yes
+
+    - name: Set up Kafka config
+      copy:
+        content: |
+          broker.id=0
+          log.dirs={{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/logs
+          zookeeper.connect=localhost:2181
+          listeners=PLAINTEXT://:9092
+          num.partitions=1
+        dest: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/config/server.properties"
+
+    # Check if Kafka is already running
+    - name: Check if Kafka is already running
+      shell: "ps aux | grep -v grep | grep -i kafka-server || true"
+      register: kafka_status
+      changed_when: false
+      failed_when: false
+
+    # Stop Kafka if it's already running
+    - name: Stop Kafka if it's already running
+      shell: "ps aux | grep kafka-server | awk '{print $2}' | xargs kill -9"
+      when: kafka_status.stdout != ""
+
+    - name: Remove Kafka lock file if present
+      file:
+        path: "{{ kafka_log_dir }}/.lock"
+        state: absent
+
+    - name: Remove Kafka lock file if present (PID file)
+      file:
+        path: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/logs/kafka-server.pid"
+        state: absent
+      when: kafka_status.stdout != ""
+
+    # Enable swap space if needed
+    - name: Check available memory
+      command: free -h
+      register: memory_check
+      changed_when: false
+
+    - name: Show memory usage
+      debug:
+        var: memory_check.stdout
+
+    - name: Check if swap is enabled
+      command: swapon --show
+      register: swap_check
+      changed_when: false
+
+    - name: Create swap file if it doesn't exist
+      when: swap_check.stdout == ""
+      block:
+        - name: Create a 4GB swap file
+          command: fallocate -l 4G /swapfile
+          
+        - name: Set the correct permissions for swap file
+          file:
+            path: /swapfile
+            mode: '0600'
+          
+        - name: Make the swap file
+          command: mkswap /swapfile
+
+        - name: Enable the swap file
+          command: swapon /swapfile
+
+        - name: Add swap file to fstab for persistence
+          lineinfile:
+            path: /etc/fstab
+            line: '/swapfile none swap sw 0 0'
+
+    # Ensure Kafka memory settings are configured
+    - name: Ensure Kafka memory settings are configured
+      lineinfile:
+        path: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/config/server.properties"
+        regexp: '^#.*KAFKA_HEAP_OPTS'
+        line: 'KAFKA_HEAP_OPTS="-Xmx512M -Xms256M"'
+
+    - name: Modify Kafka startup script to adjust memory options
+      lineinfile:
+        path: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/bin/kafka-server-start.sh"
+        regexp: '^#.*KAFKA_HEAP_OPTS'
+        line: 'export KAFKA_HEAP_OPTS="-Xmx512M -Xms256M"'
+
+    # Start Kafka service in the background
+    - name: Start Kafka service in the background
+      shell: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/bin/kafka-server-start.sh -daemon {{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/config/server.properties"
+      async: 3600
+      poll: 0
+      register: kafka_start_output
+      failed_when: false
+
+    # Ensure Kafka logs directory has proper permissions
+    - name: Ensure Kafka logs directory has correct permissions
+      file:
+        path: "{{ kafka_log_dir }}"
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+    
+    # Wait for Kafka to start on port 9092
+    - name: Wait for Kafka to start on port 9092
+      wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 9092
+        delay: 30
+        timeout: 120
+
+    # Show last 50 lines of Kafka logs for error inspection
+    - name: Show last 50 lines of Kafka logs
+      shell: tail -n 50 "{{ kafka_log_dir }}/server.log"
+      register: kafka_logs
+      changed_when: false
+
+    - name: Display Kafka logs
+      debug:
+        msg: "{{ kafka_logs.stdout }}"
+
+    # Check if Kafka is bound to port 9092
+    - name: Check if Kafka is bound to port 9092
+      shell: "netstat -an | grep ':9092' || true"
+      register: kafka_port_status
+      changed_when: false
+
+    - name: Display Kafka port binding status
+      debug:
+        msg: "{{ kafka_port_status.stdout }}"
+
+    # Check if Kafka process is running and kill it if necessary
+    - name: Check if Kafka process is running
+      shell: ps aux | grep kafka | grep -v grep || true
+      register: kafka_process
+      failed_when: false
+      changed_when: false
+
+    - name: Kill Kafka process if it's running
+      shell: kill -9 {{ kafka_pid }}
+      when: kafka_process.stdout != ""
+      vars:
+        kafka_pid: "{{ kafka_process.stdout.split()[1] }}"
+      ignore_errors: true
+
+    # Verify Kafka service is stopped
+    - name: Verify Kafka service is stopped
+      shell: ps aux | grep kafka
+      register: kafka_process_check
+      failed_when: false
+      changed_when: false
+
+    - name: Debug Kafka process check output
+      debug:
+        msg: "{{ kafka_process_check.stdout }}"
+
+    # Restart Kafka service in the background (final step)
+    - name: Restart Kafka service in the background
+      shell: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/bin/kafka-server-start.sh -daemon {{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/config/server.properties"
+      async: 3600
+      poll: 0
+      register: kafka_restart_output
+      failed_when: false
+
+    # Wait for the Kafka restart to complete
+    - name: Wait for Kafka restart to complete
+      async_status:
+        jid: "{{ kafka_restart_output.ansible_job_id }}"
+      register: kafka_restart_status
+      until: kafka_restart_status.finished
+      retries: 10
+      delay: 30
+
+    # Debug Kafka restart output after task completion
+    - name: Debug Kafka restart output
+      debug:
+        msg: "{{ kafka_restart_status }}"
