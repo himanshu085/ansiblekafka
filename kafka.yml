@@ -207,49 +207,9 @@
       debug:
         msg: "{{ kafka_port_status.stdout }}"
 
-    # Check if Kafka process is running and kill it if necessary
+    # Check if Kafka process is running
     - name: Check if Kafka process is running
       shell: ps aux | grep kafka | grep -v grep || true
       register: kafka_process
       failed_when: false
       changed_when: false
-
-    - name: Kill Kafka process if it's running
-      shell: kill -9 {{ kafka_pid }}
-      when: kafka_process.stdout != ""
-      vars:
-        kafka_pid: "{{ kafka_process.stdout.split()[1] }}"
-      ignore_errors: true
-
-    # Verify Kafka service is stopped
-    - name: Verify Kafka service is stopped
-      shell: ps aux | grep kafka
-      register: kafka_process_check
-      failed_when: false
-      changed_when: false
-
-    - name: Debug Kafka process check output
-      debug:
-        msg: "{{ kafka_process_check.stdout }}"
-
-    # Restart Kafka service in the background (final step)
-    - name: Restart Kafka service in the background
-      shell: "{{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/bin/kafka-server-start.sh -daemon {{ kafka_install_dir }}/kafka_2.13-{{ kafka_version }}/config/server.properties"
-      async: 3600
-      poll: 0
-      register: kafka_restart_output
-      failed_when: false
-
-    # Wait for the Kafka restart to complete
-    - name: Wait for Kafka restart to complete
-      async_status:
-        jid: "{{ kafka_restart_output.ansible_job_id }}"
-      register: kafka_restart_status
-      until: kafka_restart_status.finished
-      retries: 10
-      delay: 30
-
-    # Debug Kafka restart output after task completion
-    - name: Debug Kafka restart output
-      debug:
-        msg: "{{ kafka_restart_status }}"
