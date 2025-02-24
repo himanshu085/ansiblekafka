@@ -139,8 +139,8 @@
     - name: Create swap file if it doesn't exist
       when: swap_check.stdout == ""
       block:
-        - name: Create a 4GB swap file
-          command: fallocate -l 4G /swapfile
+        - name: Create a 1GB swap file
+          command: fallocate -l 1G /swapfile
           
         - name: Set the correct permissions for swap file
           file:
